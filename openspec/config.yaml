@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  Project documentation is located in docs/.
+  Read docs/project.md before planning changes.
+  Component documentation:
+  - docs/SKILL.md
+  - docs/MCP_SERVER.md
+  - docs/TELEGRAM_BOT.md
+
+  Follow the architecture defined in these files.
+  Do not invent requirements.
+  Keep implementation decisions in design.md.
+
+rules:
+  proposal:
+    - Keep changes small and focused.
+  specs:
+    - Use testable requirements.
+    - Include acceptance scenarios.
+  tasks:
+    - Include automated tests.
+
+operations:
+  apply:
+    guidance:
+      - Run relevant tests before completing tasks.
