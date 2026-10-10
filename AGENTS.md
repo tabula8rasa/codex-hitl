@@ -40,3 +40,46 @@ Before committing, run `git status`, inspect `git diff` and `git diff --staged`,
 ## Security & Architecture Constraints
 
 Keep credentials out of version control. Authenticate internal HTTP calls and restrict Telegram responses to the authorized user. Preserve the three-field tool schema, RAM-only request state, and two-service architecture. Planning workflows create artifacts only; begin implementation through an explicit apply request.
+
+## Multi-Agent Development Workflow
+
+For OpenSpec change `implement-hitl-mvp`:
+
+1. Read all approved OpenSpec artifacts.
+
+2. Before implementation, establish shared API
+   contracts and assign non-overlapping file ownership.
+
+3. Spawn `mcp_developer` and `telegram_developer`
+   concurrently.
+
+4. Wait for BOTH developers to finish.
+   Do not start integration testing earlier.
+
+5. Integrate shared configuration, Docker Compose,
+   and Codex Skill components.
+
+6. Spawn `tester`.
+   Require successful integration and E2E tests.
+
+7. If testing fails:
+   - Assign defects to the responsible developer.
+   - Wait for fixes.
+   - Repeat the failed tests and affected regressions.
+
+8. After testing passes, spawn `strict_reviewer`.
+
+9. If review fails:
+   - Assign findings to the responsible developer.
+   - Wait for fixes.
+   - Repeat testing.
+   - Repeat the strict review.
+
+10. Complete the workflow only when:
+    - All required tasks are implemented.
+    - Required tests pass.
+    - No blocking review findings remain.
+
+Only the Master may update OpenSpec tasks.md.
+Do not archive the change automatically.
+Do not weaken tests to obtain a PASS result.
