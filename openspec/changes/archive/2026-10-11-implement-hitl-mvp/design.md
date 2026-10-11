@@ -79,3 +79,12 @@ Bot tests cover message controls, UUID/type markers, callback mapping, authorize
 ## Migration Plan
 
 There is no existing implementation or data to migrate. Build both images, supply local secrets, start the two services, run automated integration checks, then register the MCP endpoint and install the skill for a live smoke test. Record actual Codex/Telegram validation separately from automated test results. Roll back by stopping the containers and removing the local client/skill registration; pending requests are intentionally lost on shutdown.
+
+## Implementation selections
+
+- Shared API contracts and exclusive ownership are recorded in `docs/IMPLEMENTATION_CONTRACTS.md` before parallel development. `contracts.py` uses strict Pydantic models with forbidden extras and canonical UUIDv4 strings.
+- Selected Python 3.14 for container execution (project requires 3.12+), MCP SDK 1.30.0, FastAPI 0.143.0, HTTPX 0.28.1, Uvicorn 0.54.0, and Pydantic 2.14.0. Direct dependencies are pinned in `pyproject.toml`, and resolved production dependencies in `requirements.lock`.
+- Telegram marker is exactly `HITL <uuidv4> <type>` on the first line. Callback actions are `approve`, `reject`, `done`, and `unable`, followed by `:<uuidv4>`. The bot obtains its own Telegram identity through `getMe` for correlation validation.
+- Compose binds public MCP to loopback at port 8100; the bot listens internally on port 8101. Containers use one worker and an unprivileged user. Service-specific environment loading uses the base service URLs defined by Compose.
+- CLI registration was checked with installed Codex 0.162.1. User configuration sets `tool_timeout_sec=3600`; the documented budget still requires a real client measurement. Global skill installation/client changes remain operator steps.
+- Strict review identified the SDK session manager's disabled transport-security default. The MCP factory explicitly enables DNS rebinding protection, permitting only documented loopback Host values and HTTP Origins (including optional ports); internal Bearer-authenticated service calls are unaffected. Host/Origin rejection tests verify no message delivery or lifecycle effects. Remote/proxy deployments require a separately reviewed allowlist/authentication configuration rather than disabling this protection.

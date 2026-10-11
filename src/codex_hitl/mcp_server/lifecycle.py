@@ -1,0 +1,84 @@
+"""RAM-only requests, serialized by one asyncio event loop."""
+import asyncio
+from asyncio import timeout, wait_for
+from dataclasses import dataclass
+from uuid import uuid4
+
+import httpx
+
+from codex_hitl.auth import internal_headers
+from codex_hitl.config import MCPConfig
+from codex_hitl.contracts import (
+    AnswerRequest, Decision, Message, MessageResponse, Request, RequestType,
+    TextAnswer, TimeoutResult, answer_matches,
+)
+
+RESPONSE_WAIT_SECONDS = 3550
+DELIVERY_BUDGET_SECONDS = 10
+
+
+class DeliveryError(RuntimeError):
+    """Delivery failed or its outcome is unknown. Never retry automatically."""
+
+
+@dataclass
+class PendingRequest:
+    future: asyncio.Future
+    request_type: RequestType
+
+
+class RequestService:
+    def __init__(self, config: MCPConfig, client: httpx.AsyncClient):
+        self.config = config
+        self.client = client
+        self.pending: dict[str, PendingRequest] = {}
+
+    def receive_answer(self, answer: AnswerRequest) -> bool:
+        # No await may be introduced between this check and set_result. One
+        # event loop makes first-response acceptance atomic, including when
+        # the original caller has not yet run its finally block.
+        entry = self.pending.get(answer.request_id)
+        if entry is None or entry.future.done():
+            return False
+        if not answer_matches(entry.request_type, answer.answer):
+            return False
+        entry.future.set_result(answer.answer)
+        return True
+
+    async def request(self, request: Request) -> dict:
+        request_id = str(uuid4())
+        entry = PendingRequest(asyncio.get_running_loop().create_future(), request.type)
+        self.pending[request_id] = entry
+        message = Message(request_id=request_id, **request.model_dump())
+        try:
+            try:
+                # httpx timeouts alone are per-operation; this context bounds
+                # the entire delivery, including a slow streaming response.
+                async with timeout(DELIVERY_BUDGET_SECONDS):
+                    response = await self.client.post(
+                        self.config.bot_api_url.rstrip("/") + "/internal/messages",
+                        json=message.model_dump(),
+                        headers=internal_headers(self.config.internal_api_token),
+                        timeout=DELIVERY_BUDGET_SECONDS,
+                    )
+                    response.raise_for_status()
+                    MessageResponse.model_validate(response.json())
+            except Exception:
+                # Do not expose response bodies, URLs or credentials in tool errors.
+                raise DeliveryError("HITL message delivery failed; outcome may be unknown") from None
+            try:
+                result: Decision | TextAnswer = await wait_for(entry.future, RESPONSE_WAIT_SECONDS)
+                return result.model_dump()
+            except TimeoutError:
+                return TimeoutResult().model_dump()
+        finally:
+            if self.pending.get(request_id) is entry:
+                del self.pending[request_id]
+            if not entry.future.done():
+                entry.future.cancel()
+
+    def shutdown(self) -> None:
+        for entry in self.pending.values():
+            if not entry.future.done():
+                entry.future.cancel()
+        self.pending.clear()

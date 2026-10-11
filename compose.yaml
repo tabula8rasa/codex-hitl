@@ -1,0 +1,24 @@
+services:
+  mcp:
+    restart: unless-stopped
+    build:
+      context: .
+      target: mcp
+    environment:
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN}
+      BOT_API_URL: http://bot:8101
+    ports:
+      - "127.0.0.1:8100:8100"
+    init: true
+  bot:
+    restart: unless-stopped
+    build:
+      context: .
+      target: bot
+    environment:
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:?Set TELEGRAM_CHAT_ID}
+      TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?Set TELEGRAM_ALLOWED_USER_ID}
+      HITL_API_URL: http://mcp:8100
+    init: true
