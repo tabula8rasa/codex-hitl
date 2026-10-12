@@ -1,5 +1,7 @@
 # Operator Codex/Telegram smoke procedure
 
+Current contract: a 900-second configured Codex tool budget, an 850-second response wait after successful delivery, and a separate 10-second delivery budget. The earlier live call returned `HITL_TIMEOUT` after 850.38 seconds (wall-clock elapsed time), verifying the reduced wait only. The three-type live expiry check below passed on 2026-10-12, with operator-confirmed Telegram updates.
+
 Requires a Telegram bot token, configured chat and allowed user, local shared token, Docker, and an actual Codex client connected as described in README. Do not place secrets in reports. Do not run another poller for the same bot. Use a dedicated test bot/chat.
 
 1. Build/start Compose and install/register the skill and MCP server. Record client version, SDK version, date, and configuration without secrets.
@@ -9,11 +11,28 @@ Requires a Telegram bot token, configured chat and allowed user, local shared to
 5. Request a manual action. Text replies must be deleted without resolving the call. Done returns `completed`; a separate Unable request returns `unable` and the agent does not assume success.
 6. If the client supports subagents, issue root and subagent requests concurrently. Answer them in reverse order and verify each original call receives its own result. Record unsupported client behavior explicitly.
 7. Attempt a duplicate/old response and a response from an unauthorized user. Neither may complete another call. Observe inactive notification for a valid duplicate.
-8. For the long-running budget, configure `tool_timeout_sec=3600`, issue a request and leave it unanswered. Record monotonic start/end times and original result. Verify the production wait remains 3550, the call returns `{"status":"timeout","error_code":"HITL_TIMEOUT"}` before 3600 seconds, and a late reply is inactive. Do not simulate time or reduce the timeout for this check.
+8. For the long-running budget, configure `tool_timeout_sec=900`, issue a request and leave it unanswered. Record monotonic start/end times and original result. Verify the production wait remains 850, the call returns `{"status":"timeout","error_code":"HITL_TIMEOUT"}` before 900 seconds, and a late reply is inactive. Before clicking or replying, verify the original Telegram message has no buttons and retains its original text plus the exact final paragraph `This request is no longer active. Your answer was not accepted.`; no separate expiry message should appear. Repeat for approval, manual action, and question (which keeps its direct-reply instruction). Record edit failures separately: the request must remain expired even if Telegram cannot be updated. Do not simulate time or reduce the timeout for this check.
 9. Record disconnect behavior separately: cancel a waiting client call and record whether cancellation reaches the server immediately or the fixed timeout bounds cleanup. Restart MCP and verify old answers are inactive.
-10. Stop Compose. Record each observed outcome, elapsed time, any transport/proxy/client timeout, and failures. Leave tasks 6.3/6.4 incomplete when access or observations are missing.
+10. Stop Compose. Record each observed outcome, elapsed time, any transport/proxy/client timeout, and failures. Record missing observations as unverified. The current timeout check requires an actual unanswered 850-second wait; automated tests do not establish live elapsed timing.
 
-## Execution status
+### Live parallel expiry acceptance — 2026-10-12
+
+Three agents each made one unanswered production MCP call, without retries or timer overrides:
+
+| Type | Start (UTC) | End (UTC) | Wall-clock elapsed |
+| --- | --- | --- | --- |
+| approval | 05:02:52.211 | 05:17:02.988 | 850.777 seconds |
+| question | 05:03:00.049 | 05:17:10.760 | 850.711 seconds |
+| manual_action | 05:03:08.483 | 05:17:19.176 | 850.693 seconds |
+
+All original invocations returned `{"status":"timeout","error_code":"HITL_TIMEOUT"}` with `isError: false`, before the 900-second client budget. Elapsed measurements use wall-clock time, not a monotonic clock. Read-only service logs for 05:02:45–05:17:35 UTC showed three expiry endpoint responses with HTTP 200 and no expiry-edit or notification failure entries.
+
+The operator confirmed that all three original Telegram messages updated as expected: buttons were removed, the original text was retained, and the exact final paragraph `This request is no longer active. Your answer was not accepted.` appeared automatically. This visual result is operator confirmation, not direct assistant observation. The operator accepted the change for archive.
+
+## Historical execution status — former timeout contract
+
+Everything below records the archived MVP with a 3600-second client budget and 3550-second response wait. Its task numbers, pending-check instructions, and acceptance decisions apply only to that historical change. The 961.926-second approval does not validate the new 900/850-second contract. Use the current procedure above for new checks.
+
 
 The original implementation session had no live connection. A subsequent live acceptance session on 2026-10-11 used the configured Codex MCP tool and real Telegram responses. Automated test-double results remain separate.
 

@@ -22,6 +22,8 @@ def setup_service(handler=None):
 
     async def deliver(request):
         import json
+        if request.url.path == "/internal/expire":
+            return httpx.Response(200, json={"updated": True})
         message = json.loads(request.content)
         await messages.put(message)
         if handler:
@@ -95,7 +97,7 @@ async def test_fixed_timeout_cleanup_and_late_answer(monkeypatch):
         assert await service.request(Request(type="question", title="", description="")) == {
             "status": "timeout", "error_code": "HITL_TIMEOUT"}
         message = await messages.get()
-        assert waits == [3550]
+        assert waits == [850]
         assert not service.receive_answer(answer(message["request_id"], "answered", answer="late"))
         assert not service.pending
 

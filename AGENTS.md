@@ -29,7 +29,7 @@ Use kebab-case OpenSpec change and capability names, such as `hitl-request-lifec
 
 ## Testing Guidelines
 
-The design selects pytest with async support; it is not installed or configured yet. Name tests `test_*.py`. Cover concurrent requests, first-response acceptance, timeout cleanup, authorization, and Telegram reply handling. Use mocked Telegram responses and controlled time without changing the production 3550-second timeout. No coverage percentage is specified. Run relevant tests before marking implementation tasks complete; record live integration checks separately.
+The design selects pytest with async support; it is not installed or configured yet. Name tests `test_*.py`. Cover concurrent requests, first-response acceptance, timeout cleanup, authorization, and Telegram reply handling. Use mocked Telegram responses and controlled time without changing the production 850-second timeout. No coverage percentage is specified. Run relevant tests before marking implementation tasks complete; record live integration checks separately.
 
 ## Commit & Pull Request Guidelines
 

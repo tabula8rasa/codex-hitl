@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from codex_hitl.auth import require_internal_token
 from codex_hitl.config import BotConfig
-from codex_hitl.contracts import Message, MessageResponse
+from codex_hitl.contracts import ExpiryNotification, ExpiryResponse, Message, MessageResponse
 from .service import TelegramBot, TelegramError
 
 
@@ -39,5 +39,13 @@ def create_app(config: BotConfig | None = None, *, telegram_client: httpx.AsyncC
             return MessageResponse(message_id=await bot.send_message(message))
         except TelegramError:
             raise HTTPException(status_code=502, detail="Telegram message delivery failed") from None
+
+    @app.post("/internal/expire", response_model=ExpiryResponse, dependencies=[Depends(require_internal_token(config.internal_api_token))])
+    async def expire(notification: ExpiryNotification):
+        try:
+            await bot.expire_message(notification)
+            return ExpiryResponse(updated=True)
+        except TelegramError:
+            raise HTTPException(status_code=502, detail="Telegram expiry edit failed") from None
 
     return app

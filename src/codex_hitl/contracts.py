@@ -54,7 +54,23 @@ class TimeoutResult(StrictModel):
 
 
 class MessageResponse(StrictModel):
-    message_id: int
+    message_id: int = Field(gt=0)
+
+
+class ExpiryNotification(StrictModel):
+    message_id: int = Field(gt=0)
+    message: Message
+
+
+class ExpiryResponse(StrictModel):
+    updated: Literal[True]
+
+    @field_validator("updated", mode="before")
+    @classmethod
+    def confirmed_update(cls, value: object) -> bool:
+        if value is not True:
+            raise ValueError("updated must be true")
+        return True
 
 
 class Acceptance(StrictModel):

@@ -22,8 +22,10 @@ class TelegramDouble:
         self.messages = asyncio.Queue()
         self.updates = asyncio.Queue()
         self.fail_send = False
+        self.fail_edit = False
         self.early = None
         self.serial = 0
+        self.sent = {}
 
     async def request(self, request):
         method = request.url.path.rsplit('/', 1)[1]
@@ -39,10 +41,18 @@ class TelegramDouble:
             self.serial += 1
             result = {'message_id': self.serial, 'from': {'id': 777, 'is_bot': True},
                       'chat': {'id': 42}, **body}
+            self.sent[self.serial] = result
             if body['text'].startswith('HITL '):
                 await self.messages.put(result)
                 if self.early:
                     await self.early(result)
+        elif method == 'editMessageText':
+            if self.fail_edit:
+                return httpx.Response(400, json={'ok': False, 'error_code': 400,
+                                               'description': 'Bad Request: message cannot be edited'})
+            result = self.sent[body['message_id']]
+            assert result['chat']['id'] == body['chat_id']
+            result.update(text=body['text'], reply_markup=body['reply_markup'])
         else:
             result = True
         return httpx.Response(200, json={'ok': True, 'result': result})
@@ -119,6 +129,7 @@ async def test_full_sdk_polling_roundtrip(kind, status):
         if kind != 'question':
             await eventually(lambda: any(m == 'editMessageReplyMarkup' for m, _ in tg.calls))
         assert not apps['mcp'].state.service.pending
+        assert not any(m == 'editMessageText' for m, _ in tg.calls)
 
 
 async def test_reversed_parallel_answers_and_duplicate():
@@ -184,17 +195,26 @@ async def test_auth_and_invalid_answers_have_no_effect():
         assert not (await asyncio.wait_for(task, 3)).isError
 
 
-async def test_timeout_late_answer_and_cleanup(monkeypatch):
+@pytest.mark.parametrize('kind', ['approval', 'manual_action', 'question'])
+async def test_timeout_late_answer_and_cleanup(monkeypatch, kind):
     from codex_hitl.mcp_server import lifecycle
+    from codex_hitl.telegram_bot import render_message
+    from codex_hitl.contracts import Message
+    from codex_hitl.telegram_bot.service import EXPIRY_NOTICE
     async def expired(future, timeout):
-        assert timeout == 3550
+        assert timeout == 850
         raise TimeoutError
     monkeypatch.setattr(lifecycle, 'wait_for', expired)
     async with integrated() as (session, apps, tg, answers):
-        result = await asyncio.wait_for(call(session, 'approval'), 3)
+        result = await asyncio.wait_for(call(session, kind), 3)
         assert result.structuredContent == {'status': 'timeout', 'error_code': 'HITL_TIMEOUT'}
         msg = await next_message(tg)
-        await apps['bot'].state.bot.handle_update(tg.update(msg))
+        original = render_message(Message(request_id=msg['text'].split()[1], type=kind,
+                                          title='QA title', description='QA description'), 42)['text']
+        assert msg['text'] == original + '\n\n' + EXPIRY_NOTICE
+        assert msg['reply_markup'] == {'inline_keyboard': []}
+        assert sum(m == 'sendMessage' for m, _ in tg.calls) == 1
+        await apps['bot'].state.bot.handle_update(tg.update(msg, {'approval': 'approved', 'manual_action': 'completed', 'question': 'answered'}[kind]))
         assert answers == [{'accepted': False}]
         assert not apps['mcp'].state.service.pending
 
@@ -215,3 +235,48 @@ async def test_competing_button_answers_accept_exactly_one():
         await asyncio.gather(bot.handle_update(tg.update(msg, 'approved')), bot.handle_update(tg.update(msg, 'rejected')))
         assert sorted(a['accepted'] for a in answers) == [False, True]
         assert (await asyncio.wait_for(task, 3)).structuredContent['status'] in {'approved', 'rejected'}
+
+
+async def test_concurrent_expirations_edit_only_their_original_messages(monkeypatch):
+    from codex_hitl.mcp_server import lifecycle
+    from codex_hitl.telegram_bot.service import EXPIRY_NOTICE
+    gate = asyncio.Event()
+    async def expired(future, seconds):
+        assert seconds == 850
+        await gate.wait()
+        raise TimeoutError
+    monkeypatch.setattr(lifecycle, 'wait_for', expired)
+    async with integrated() as (session, apps, tg, answers):
+        tasks = [call(session, kind) for kind in ['approval', 'manual_action', 'question']]
+        messages = [await next_message(tg) for _ in tasks]
+        originals = {m['message_id']: m['text'] for m in messages}
+        gate.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), 3)
+        assert all(r.structuredContent == {'status': 'timeout', 'error_code': 'HITL_TIMEOUT'} for r in results)
+        edits = [body for method, body in tg.calls if method == 'editMessageText']
+        assert {e['message_id'] for e in edits} == set(originals) and len(edits) == 3
+        for edit in edits:
+            assert edit['text'] == originals[edit['message_id']] + '\n\n' + EXPIRY_NOTICE
+            assert edit['reply_markup'] == {'inline_keyboard': []}
+        assert not answers and not apps['mcp'].state.service.pending
+
+
+async def test_telegram_expiry_failure_preserves_original_timeout(monkeypatch, caplog):
+    from codex_hitl.mcp_server import lifecycle
+    async def expired(future, seconds):
+        assert seconds == 850
+        raise TimeoutError
+    monkeypatch.setattr(lifecycle, 'wait_for', expired)
+    async with integrated() as (session, apps, tg, answers):
+        tg.fail_edit = True
+        result = await asyncio.wait_for(call(session, 'approval'), 3)
+        assert not result.isError
+        assert result.structuredContent == {'status': 'timeout', 'error_code': 'HITL_TIMEOUT'}
+        message = await next_message(tg)
+        assert not apps['mcp'].state.service.pending
+        await apps['bot'].state.bot.handle_update(tg.update(message))
+        assert answers == [{'accepted': False}]
+        assert sum(m == 'editMessageText' for m, _ in tg.calls) == 1
+        assert 'Telegram expiry edit failed' in caplog.text
+        assert 'HITL expiry notification failed' in caplog.text
+        assert 'qa-bot' not in caplog.text

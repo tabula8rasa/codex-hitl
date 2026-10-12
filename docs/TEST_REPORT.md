@@ -1,5 +1,31 @@
 # Independent QA report
 
+## Current timeout contract — reduce-mcp-timeout
+
+The fixed response wait is 850 seconds after successful delivery, with separate 10-second delivery and expiry-notification budgets. Configure the Codex HITL entry with `tool_timeout_sec = 900`. Expiry notification now edits the original Telegram message and removes buttons automatically. A prior live call returned `HITL_TIMEOUT` after 850.38 seconds of wall-clock elapsed time; it verified reduced timing only. The subsequent three-type live expiry check passed on 2026-10-12; the operator confirmed the real Telegram text and button updates. See `docs/LIVE_SMOKE.md` for the procedure and live record.
+
+Current expiry verification (2026-10-12): `.venv/bin/python -m pytest tests --ignore=tests/test_e2e_docker.py -q` — **186 passed in 1.47s**; `RUN_DOCKER_E2E=1 .venv/bin/python -m pytest tests/test_e2e_docker.py -q` — **1 passed in 4.72s**, against rebuilt MCP/bot images. Strict OpenSpec validation and diff checks passed. These runs verify the authenticated expiry route, original-message text/keyboard effects, concurrency, late answers, failure budgets, and existing regressions. Docker timing uses a mounted QA adapter asserting the production 850-second wait; no production timer is shortened. QA containers/network were cleaned up. The automated verification did not restart the user's running deployment. Subsequent live verification is recorded separately below. See `docs/VERIFICATION.md` for the complete record.
+
+Initial timeout-only regression on 2026-10-11: **147 passed in 1.72s**. That result preceded the expiry refinement and is retained as earlier evidence.
+
+### Live parallel expiry acceptance — 2026-10-12
+
+Three agents each made one unanswered production MCP call, without retries or timer overrides:
+
+| Type | Start (UTC) | End (UTC) | Wall-clock elapsed |
+| --- | --- | --- | --- |
+| approval | 05:02:52.211 | 05:17:02.988 | 850.777 seconds |
+| question | 05:03:00.049 | 05:17:10.760 | 850.711 seconds |
+| manual_action | 05:03:08.483 | 05:17:19.176 | 850.693 seconds |
+
+All original invocations returned `{"status":"timeout","error_code":"HITL_TIMEOUT"}` with `isError: false`, before the 900-second client budget. Elapsed measurements use wall-clock time, not a monotonic clock. Read-only service logs for 05:02:45–05:17:35 UTC showed three expiry endpoint responses with HTTP 200 and no expiry-edit or notification failure entries.
+
+The operator confirmed that all three original Telegram messages updated as expected: buttons were removed, the original text was retained, and the exact final paragraph `This request is no longer active. Your answer was not accepted.` appeared automatically. This visual result is operator confirmation, not direct assistant observation. The operator accepted the change for archive.
+
+## Historical MVP record — former timeout contract
+
+All sections below retain the archived `implement-hitl-mvp` evidence under its former 3550-second response wait and 3600-second client budget. Old task numbers, follow-up instructions, and acceptance exceptions describe that historical change and are superseded for current use by the instructions above. Original measurements and PASS results are preserved; the 961.926-second approval is not verification of the new timeout.
+
 Date: 2026-10-11. Change: `implement-hitl-mvp`.
 
 **PASS — automated implementation verification.** No blocking defect reproduced. External client/Telegram acceptance remains untested; this report does not certify completion of OpenSpec tasks 6.3 or 6.4.

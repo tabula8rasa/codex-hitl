@@ -21,6 +21,10 @@ async def telegram(token: str, method: str, payload: dict):
         result = {'message_id': len(messages) + 1, 'from': {'id': 777, 'is_bot': True},
                   'chat': {'id': 42}, **payload}
         messages.append(result)
+    elif method == 'editMessageText':
+        result = next(m for m in messages if m['message_id'] == payload['message_id'])
+        assert result['chat']['id'] == payload['chat_id']
+        result.update(text=payload['text'], reply_markup=payload['reply_markup'])
     else:
         result = True
     return {'ok': True, 'result': result}

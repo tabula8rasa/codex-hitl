@@ -52,7 +52,8 @@ async def test_built_containers_sdk_telegram_polling_and_auth():
                           *environment, *extra, image, *command)
         run('double', 'telegram-double', 'codex-hitl-bot:latest', ['-p','127.0.0.1::9000','-v',support+':/qa:ro'],
             ['uvicorn','telegram_double:app','--app-dir','/qa','--host','0.0.0.0','--port','9000'])
-        run('mcp', 'mcp', 'codex-hitl-mcp:latest', ['-p','127.0.0.1::8100','-e','BOT_API_URL=http://bot:8101'])
+        run('mcp', 'mcp', 'codex-hitl-mcp:latest', ['-p','127.0.0.1::8100','-e','BOT_API_URL=http://bot:8101', '-v',support+':/qa:ro'],
+            ['uvicorn','mcp_entrypoint:factory','--factory','--app-dir','/qa','--host','0.0.0.0','--port','8100','--workers','1'])
         async with httpx.AsyncClient(timeout=10) as client:
             double_url = port(prefix+'-double', 9000)
             mcp_url = port(prefix+'-mcp', 8100)
@@ -64,7 +65,9 @@ async def test_built_containers_sdk_telegram_polling_and_auth():
             await wait_ready(client, bot_url+'/openapi.json')
             await wait_ready(client, mcp_url+'/openapi.json')
             assert (await client.post(bot_url+'/internal/messages', json={})).status_code == 401
+            assert (await client.post(bot_url+'/internal/expire', json={})).status_code == 401
             assert (await client.post(mcp_url+'/internal/answer', json={})).status_code == 401
+            assert (await client.post(mcp_url+'/qa/expire')).status_code == 401
             attack = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                       'params': {'name': 'hitl.request', 'arguments': {'type': 'approval', 'title': 'attack', 'description': 'attack'}}}
             for headers, expected in (
@@ -106,6 +109,40 @@ async def test_built_containers_sdk_telegram_polling_and_auth():
                                 break
                             await asyncio.sleep(.05)
                     assert sum(c['method']=='editMessageReplyMarkup' for c in calls) == 4
+                    # Only the mounted QA adapter controls timing; production
+                    # still supplies its fixed 850-second wait to that adapter.
+                    from codex_hitl.telegram_bot.service import EXPIRY_NOTICE
+                    sends_before_expiry = sum(c['method'] == 'sendMessage' for c in calls)
+                    kinds = ['approval', 'manual_action', 'question']
+                    expiry_tasks = [asyncio.create_task(session.call_tool('hitl.request',
+                        {'type': kind, 'title': 'Expire '+kind, 'description': 'Container expiry'})) for kind in kinds]
+                    async with asyncio.timeout(10):
+                        while True:
+                            expired_messages = [m for m in (await client.get(double_url+'/messages')).json()
+                                                if '\n\nExpire ' in m['text']]
+                            if len(expired_messages) == 3:
+                                break
+                            await asyncio.sleep(.05)
+                    originals = {m['message_id']: m['text'] for m in expired_messages}
+                    response = await client.post(mcp_url+'/qa/expire', headers={'Authorization': 'Bearer qa-internal'})
+                    assert response.status_code == 200
+                    expiry_results = await asyncio.wait_for(asyncio.gather(*expiry_tasks), 10)
+                    assert all(not r.isError and r.structuredContent == {'status': 'timeout', 'error_code': 'HITL_TIMEOUT'}
+                               for r in expiry_results)
+                    edited = [m for m in (await client.get(double_url+'/messages')).json() if m['message_id'] in originals]
+                    assert len(edited) == 3
+                    for message in edited:
+                        assert message['text'] == originals[message['message_id']] + '\n\n' + EXPIRY_NOTICE
+                        assert message['reply_markup'] == {'inline_keyboard': []}
+                        payload = {'request_id': message['text'].split()[1],
+                                   'answer': {'status': 'answered', 'answer': 'late'} if ' question\n' in message['text']
+                                   else {'status': 'completed'} if ' manual_action\n' in message['text'] else {'status': 'approved'}}
+                        response = await client.post(mcp_url+'/internal/answer', json=payload,
+                                                     headers={'Authorization': 'Bearer qa-internal'})
+                        assert response.json() == {'accepted': False}
+                    calls = (await client.get(double_url+'/calls')).json()
+                    assert sum(c['method']=='editMessageText' for c in calls) == 3
+                    assert sum(c['method']=='sendMessage' for c in calls) == sends_before_expiry + 3
             for name in names:
                 assert docker('inspect','-f','{{.State.Running}}',name) == 'true'
                 assert docker('inspect','-f','{{.Config.User}}',name) == 'hitl'

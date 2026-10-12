@@ -7,9 +7,10 @@ import httpx
 
 from codex_hitl.auth import internal_headers
 from codex_hitl.config import BotConfig
-from codex_hitl.contracts import Acceptance, AnswerRequest, Message
+from codex_hitl.contracts import Acceptance, AnswerRequest, ExpiryNotification, Message
 
 logger = logging.getLogger(__name__)
+EXPIRY_NOTICE = "This request is no longer active. Your answer was not accepted."
 ACTIONS = {
     "approve": ("approval", "approved"),
     "reject": ("approval", "rejected"),
@@ -62,10 +63,18 @@ class TelegramBot:
         self.polling_task: asyncio.Task | None = None
         self._start_lock = asyncio.Lock()
 
-    async def telegram(self, method: str, payload: dict, *, polling: bool = False):
+    async def telegram(self, method: str, payload: dict, *, polling: bool = False, allow_unchanged: bool = False):
         try:
             async with asyncio.timeout(40 if polling else 10):
                 response = await self.telegram_client.post(f"{self.api_url}/{method}", json=payload, timeout=40 if polling else 10)
+                if allow_unchanged and method == "editMessageText" and response.status_code == 400:
+                    body = response.json()
+                    if (isinstance(body, dict) and body.get("ok") is False
+                            and body.get("error_code") == 400
+                            and isinstance(body.get("description"), str)
+                            and (body["description"] == "Bad Request: message is not modified"
+                                 or body["description"].startswith("Bad Request: message is not modified:"))):
+                        return True
                 response.raise_for_status()
                 body = response.json()
                 if not isinstance(body, dict) or body.get("ok") is not True or "result" not in body:
@@ -98,9 +107,24 @@ class TelegramBot:
 
     async def send_message(self, message: Message) -> int:
         result = await self.telegram("sendMessage", render_message(message, self.config.telegram_chat_id))
-        if not isinstance(result, dict) or type(result.get("message_id")) is not int:
+        if (not isinstance(result, dict) or type(result.get("message_id")) is not int
+                or result["message_id"] <= 0):
             raise TelegramError("Telegram returned an invalid message identifier")
         return result["message_id"]
+
+    async def expire_message(self, notification: ExpiryNotification) -> None:
+        payload = render_message(notification.message, self.config.telegram_chat_id)
+        payload.update(message_id=notification.message_id,
+                       text=payload["text"] + "\n\n" + EXPIRY_NOTICE,
+                       reply_markup={"inline_keyboard": []})
+        try:
+            result = await self.telegram("editMessageText", payload, allow_unchanged=True)
+            if result is not True and (not isinstance(result, dict)
+                                       or result.get("message_id") != notification.message_id):
+                raise TelegramError("Invalid Telegram expiry edit response")
+        except TelegramError:
+            logger.warning("Telegram expiry edit failed")
+            raise
 
     def original_marker(self, message: object) -> tuple[str, str] | None:
         if not isinstance(message, dict) or self.bot_id is None:

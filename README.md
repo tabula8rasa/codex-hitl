@@ -28,7 +28,7 @@ Codex ← result of the original call
 
 - Request types: `approval`, `question`, `manual_action`.
 - The agent provides only three input fields; it does not know about UUIDs, Telegram, or the waiting mechanism.
-- MCP waits for a maximum of **3550 seconds**; Codex has a **3600-second** limit.
+- MCP waits for a maximum of **850 seconds**; Codex is configured with a **900-second** tool budget.
 - On `HITL_TIMEOUT`, the subagent stops the blocked work and reports the error to its parent agent; the parent decides what to do next.
 - All active requests are stored in RAM, without SQLite, Redis, or queues.
 - Pending requests are lost when MCP restarts. A late response is rejected after the request has ended.
@@ -50,7 +50,7 @@ Codex ← result of the original call
 3. The bot ignores and deletes text replies to messages of types `approval` and `manual_action`; such replies do not complete the request.
 4. After the MCP server confirms that it has accepted the response, the bot removes the buttons from the corresponding Telegram message.
 5. Delivery recovery and handling of ambiguous delivery outcomes are outside the scope of the current MVP.
-6. The **3550-second** timeout remains unchanged. Reducing the timeout when testing the working implementation is a future decision and does not modify the current specification.
+6. The production response wait is fixed at **850 seconds** after successful delivery. Configure the Codex tool budget to **900 seconds**, preserving a 50-second margin; delivery has its own 10-second total budget. Use controlled time for automated timeout tests.
 
 ## First-time setup
 
@@ -138,12 +138,12 @@ Add or update this entry in `~/.codex/config.toml`. Preserve other settings and 
 ```toml
 [mcp_servers.hitl]
 url = "http://127.0.0.1:8100/mcp"
-tool_timeout_sec = 3600
+tool_timeout_sec = 900
 ```
 
-Alternatively, `codex mcp add hitl --url http://127.0.0.1:8100/mcp` registers the URL; then edit its configuration entry to add `tool_timeout_sec = 3600`.
+Alternatively, `codex mcp add hitl --url http://127.0.0.1:8100/mcp` registers the URL; then edit its configuration entry to add `tool_timeout_sec = 900`.
 
-The timeout setting matters: the documented Codex default is 60 seconds, while this server waits up to 3550 seconds for a response. Telegram and internal service tokens stay in `.env`; they are not needed in this local MCP entry. See the official [MCP guide](https://developers.openai.com/codex/mcp) and [configuration reference](https://developers.openai.com/codex/config-reference). Registration syntax was checked with Codex CLI 0.162.1; the project's intended 3600-second client budget still requires live measurement.
+The timeout setting matters: the documented Codex default is 60 seconds, while this server waits up to 850 seconds for a response. Telegram and internal service tokens stay in `.env`; they are not needed in this local MCP entry. See the official [MCP guide](https://developers.openai.com/codex/mcp) and [configuration reference](https://developers.openai.com/codex/config-reference). Registration syntax was checked with Codex CLI 0.162.1; three live unanswered calls returned `HITL_TIMEOUT` after about 850.7 seconds, within the configured 900-second budget (see the verification record).
 
 ### 6. Install the HITL skill
 
@@ -174,7 +174,9 @@ Reply **directly to the bot's question message** with text. Codex should receive
 
 Click **Done**. Codex should receive `completed`, and the buttons should disappear.
 
-These checks establish the basic connection. Complete the separate [live smoke procedure](docs/LIVE_SMOKE.md) for rejection, authorization, concurrency, and the actual **3550-second (59 minutes 10 seconds)** timeout measurement.
+Expiry editing requires the updated bot and MCP images. Deploy the bot endpoint before MCP starts sending expiry notifications, or rebuild/restart both together when no requests are pending.
+
+These checks establish the basic connection. Complete the separate [live smoke procedure](docs/LIVE_SMOKE.md) for rejection, authorization, concurrency, and the actual **850-second (14 minutes 10 seconds)** timeout measurement.
 
 ## Development and automated tests
 
@@ -203,8 +205,8 @@ For native development, export the bot variables from `.env` plus `BOT_API_URL=h
 
 ## Operational constraints
 
-Both internal routes require `Authorization: Bearer <INTERNAL_API_TOKEN>`. MCP transport validates Host and Origin against loopback addresses to prevent DNS rebinding. The public MCP listener has no application authentication; remote/proxy exposure requires separately reviewed authentication and transport allowlists.
+All internal routes require `Authorization: Bearer <INTERNAL_API_TOKEN>`. MCP transport validates Host and Origin against loopback addresses to prevent DNS rebinding. The public MCP listener has no application authentication; remote/proxy exposure requires separately reviewed authentication and transport allowlists.
 
-The response wait is fixed at 3550 seconds after delivery, with a separate 10-second total delivery boundary. Do not lower the production wait to test. Restarting MCP loses all pending requests; restarting the bot loses its update offset. There is no persistence or recovery of ambiguous delivery outcomes. Client disconnect cancellation may depend on the SDK; see the verification record.
+The response wait is fixed at 850 seconds after delivery, with a separate 10-second total delivery boundary. When the wait expires, MCP makes the request inactive and notifies the bot. The bot edits the original Telegram message, removes its buttons, and appends exactly "This request is no longer active. Your answer was not accepted." as a final paragraph, including for questions. No click or separate expiry message is needed. Expiry notification has its own 10-second total budget; failed notification/editing is logged and the MCP result remains `HITL_TIMEOUT`, though the Telegram message may remain unedited. Late replies remain inactive. Do not lower the production wait to test. Restarting MCP loses all pending requests; restarting the bot loses its update offset. There is no persistence or recovery of ambiguous delivery outcomes. Client disconnect cancellation may depend on the SDK; see the verification record.
 
 See [live smoke procedure](docs/LIVE_SMOKE.md), [verification evidence](docs/VERIFICATION.md), and [shared API contracts](docs/IMPLEMENTATION_CONTRACTS.md). Static skill checks validate its contents, not model reasoning.

@@ -19,7 +19,7 @@ Allowed types: `approval`, `question`, `manual_action`.
 2. Generates a UUIDv4 and creates an `asyncio.Future`.
 3. Registers `pending[request_id] = (future, type)`.
 4. Executes `await send_to_bot(...)` — `POST /internal/messages`.
-5. Executes `await future` with an internal timeout of 3550 seconds.
+5. Executes `await future` with an internal timeout of 850 seconds.
 6. Returns the response or `HITL_TIMEOUT` to the agent; always removes the entry from `pending`.
 
 **`receive_answer(request_id, answer)`**
@@ -39,7 +39,7 @@ Allowed types: `approval`, `question`, `manual_action`.
 - Python, MCP Python SDK, FastAPI (internal HTTP API), Docker.
 - A single MCP process; multiple concurrent requests via `asyncio`.
 - No SQLite/Redis: active requests exist only in `pending` (RAM).
-- HITL wait timeout: **3550 seconds**; Codex call limit: **3600 seconds**.
+- HITL wait timeout: **850 seconds**; configured Codex tool budget: **900 seconds**.
 - If sending the message fails, the call terminates with an error and cleans up `pending`.
 - Pending calls are lost when the server restarts. Expired/unknown responses are rejected.
 - Internal HTTP calls are protected by `INTERNAL_API_TOKEN`.
@@ -55,7 +55,7 @@ Allowed types: `approval`, `question`, `manual_action`.
 ## Additional Context and Constraints
 
 - The existing `hitl.request(type, title, description)` schema remains unchanged until a separate decision is made on transmitting identity information.
-- The wait timeout remains **3550 seconds**. A shorter timeout considered for future testing does not change the current contract.
+- The production response wait is fixed at **850 seconds** after delivery. The configured Codex tool budget is **900 seconds**; tests use controlled time without reducing the production wait.
 
 ## Running the implementation
 
@@ -100,11 +100,11 @@ Delivery has a **10-second total budget**, in addition to HTTP operation timeout
 HTTP failures, invalid delivery responses, and delivery timeouts return MCP tool
 errors and clean up the registered Future. An ambiguous outcome is not retried.
 Error text omits remote response bodies and credentials. After successful delivery,
-the original call waits **3550 seconds** and returns the documented timeout shape
+the original call waits **850 seconds** and returns the documented timeout shape
 if unanswered. Cancellation reaching the running coroutine cleans up its request;
 shutdown cancels unresolved Futures. Restart loses all pending state.
 
-The documented 3600-second Codex client budget and propagation of real client
+The documented 900-second Codex client budget and propagation of real client
 network disconnects still require the operator-run live checks. Unit cancellation
 tests verify coroutine cancellation, not every client's disconnect behavior.
 
@@ -117,8 +117,8 @@ python -m pytest tests/test_mcp*.py -q
 These tests use the real SDK client over in-process ASGI HTTP for discovery,
 validation and returned results, plus controlled async lifecycle tests for races,
 out-of-order requests, all result statuses, authorization, errors and cleanup.
-They assert the unchanged 3550-second response wait and 10-second delivery budget
-through patched timing primitives, without waiting an hour or adding a runtime
+They assert the fixed 850-second response wait and 10-second delivery budget
+through patched timing primitives, without waiting 14 minutes 10 seconds or adding a runtime
 override.
 
 `create_app(config, bot_client=client)` accepts an externally owned async HTTP
@@ -137,3 +137,11 @@ Non-browser SDK clients may omit Origin. Invalid Host returns HTTP 421 and
 invalid Origin returns HTTP 403 before tool execution. Deployment still publishes
 the listener only on loopback. In-process SDK tests use
 `http://127.0.0.1:8100/mcp`, so they exercise the production allowlist.
+
+## Expiry notification
+
+After the fixed 850-second response wait expires, MCP removes the request from `pending` and makes its Future terminal before awaiting external notification. It retains only the delivered message ID and original request in the running coroutine, and sends authenticated `POST ${BOT_API_URL}/internal/expire` with exactly `message_id` (positive integer) and `message` (the original `request_id`, `type`, `title`, `description`). The bot returns `{"updated":true}` after updating the original Telegram message. The strict expiry response forbids extra fields and requires `updated` to be true.
+
+The bot removes buttons and appends the exact inactive notice to the original message for all request types. MCP's complete expiry operation has a separate **10-second total budget**, including HTTP/body reading and response validation, with no automatic retry. A notification/edit failure is logged without credentials and cannot replace `HITL_TIMEOUT`, prevent cleanup, or reopen the request. Late answers are rejected even while editing is in flight. An accepted answer never triggers expiry editing. Client cancellation propagates; cancellation, delivery failure, and restart do not proactively annotate messages under this contract.
+
+Delivery (10 seconds), response waiting (850), and expiry notification (10) can consume up to 870 seconds, leaving approximately 30 seconds within the configured 900-second client budget for other overhead. This arithmetic does not guarantee transport behavior. Controlled-time tests use the production values: `.venv/bin/python -m pytest tests/test_expiry.py tests/test_mcp_lifecycle.py tests/test_integration_services.py -q`.

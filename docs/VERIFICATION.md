@@ -1,5 +1,61 @@
 # Verification record
 
+## Current timeout contract — reduce-mcp-timeout
+
+The fixed response wait is 850 seconds after successful delivery, with separate 10-second delivery and expiry-notification budgets. Configure the Codex HITL entry with `tool_timeout_sec = 900`. Expiry notification now edits the original Telegram message and removes buttons automatically. A prior live call returned `HITL_TIMEOUT` after 850.38 seconds of wall-clock elapsed time; it verified reduced timing only. The subsequent three-type live expiry check passed on 2026-10-12; the operator confirmed the real Telegram text and button updates. See `docs/LIVE_SMOKE.md` for the procedure and live record.
+
+### Expiry refinement verification — 2026-10-12
+
+| Check | Actual result |
+| --- | --- |
+| `INTERNAL_API_TOKEN=qa-internal TELEGRAM_BOT_TOKEN=qa-bot TELEGRAM_CHAT_ID=42 TELEGRAM_ALLOWED_USER_ID=99 docker compose build` | Both final images built successfully |
+| `.venv/bin/python -m pytest tests --ignore=tests/test_e2e_docker.py -q` | **186 passed in 1.47s** |
+| `RUN_DOCKER_E2E=1 .venv/bin/python -m pytest tests/test_e2e_docker.py -q` | **1 passed in 4.72s** |
+| `openspec validate reduce-mcp-timeout --strict` | Valid |
+| `git diff --check` | Passed |
+
+Final local image IDs: MCP `9a0cbf1211ae`, bot `304bf28ed995`. These results include strict expiry payload/response validation; endpoint authorization and configured-chat targeting; original-text preservation and exact suffix for approval/manual-action/question requests; repeated identical edits; safe Telegram, transport, invalid-response, and total-budget failures; cancellation propagation; inactivity before editing; concurrent message correlation; and no expiry editing after an accepted answer. The client budget test includes delivery, response, and expiry work (870 seconds total within 900).
+
+The Docker test uses both rebuilt production images and actual network SDK/internal HTTP calls. Only the mounted QA MCP factory controls the wait through a protected test trigger, asserting the requested production wait is 850; neither the trigger nor timer override is shipped in production. The Telegram double records actual text/keyboard effects for three concurrent expirations. All original roundtrip, authentication, Host/Origin, duplicate-response, non-root-container, and cleanup checks remain. There were 187 passing tests across the two final runs; no skips in either run. No `hitl-qa` containers or networks remained after cleanup. The build did not restart the user's running deployment, and no new live Telegram message was sent during this implementation.
+
+### Live parallel expiry acceptance — 2026-10-12
+
+Three agents each made one unanswered production MCP call, without retries or timer overrides:
+
+| Type | Start (UTC) | End (UTC) | Wall-clock elapsed |
+| --- | --- | --- | --- |
+| approval | 05:02:52.211 | 05:17:02.988 | 850.777 seconds |
+| question | 05:03:00.049 | 05:17:10.760 | 850.711 seconds |
+| manual_action | 05:03:08.483 | 05:17:19.176 | 850.693 seconds |
+
+All original invocations returned `{"status":"timeout","error_code":"HITL_TIMEOUT"}` with `isError: false`, before the 900-second client budget. Elapsed measurements use wall-clock time, not a monotonic clock. Read-only service logs for 05:02:45–05:17:35 UTC showed three expiry endpoint responses with HTTP 200 and no expiry-edit or notification failure entries.
+
+The operator confirmed that all three original Telegram messages updated as expected: buttons were removed, the original text was retained, and the exact final paragraph `This request is no longer active. Your answer was not accepted.` appeared automatically. This visual result is operator confirmation, not direct assistant observation. The operator accepted the change for archive.
+
+### Initial timeout-only verification — 2026-10-11
+
+Executed on 2026-10-11 using the existing repository virtual environment (system Python has no pytest):
+
+| Command | Result |
+| --- | --- |
+| `.venv/bin/python -m pytest tests/test_mcp_lifecycle.py tests/test_integration_services.py -q` | 31 passed in 1.39s |
+| `.venv/bin/python -m pytest tests/test_documented_contracts.py -q` | 2 passed in 0.82s |
+| `.venv/bin/python -m pytest tests --ignore=tests/test_e2e_docker.py -q` | 147 passed in 1.72s |
+| `openspec validate reduce-mcp-timeout --strict` | Valid |
+| `git diff --check` | Passed |
+
+Controlled-time tests assert the production 850-second response wait, unchanged timeout result, cleanup, and late-answer rejection. The parsed README configuration and alternate registration instructions specify 900 seconds; delivery plus response waiting fits within that budget. At that initial verification stage Docker E2E and real elapsed-time timeout measurement had not been run. The expiry verification and subsequent live timing observation above supersede that limitation; historical MVP evidence below remains unchanged.
+
+### Timeout reference audit
+
+Reviewed hidden and tracked project files using `rg -n --hidden -g '!.git' -g '!.env' '3600|3550|3_600|3_550|tool_timeout_sec|RESPONSE_WAIT_SECONDS|59 minutes|hour' .`, plus alternative duration spellings. Current runtime, test assertions, client examples, and operational instructions use 850/900 seconds. Independent delivery and Telegram polling timeouts remain unchanged.
+
+Remaining former values are confined to the archived MVP artifacts, the explicitly labeled historical records in `docs/LIVE_SMOKE.md`, `docs/TEST_REPORT.md`, and this file, and old-to-new context/rollback explanations in the archived reduce-mcp-timeout artifacts. All three delta specs were synced to the main specs before archiving the completed change on 2026-10-12. Verified the original report bodies and recorded measurements were retained verbatim.
+
+## Historical MVP record — former timeout contract
+
+All sections below retain the archived `implement-hitl-mvp` evidence under its former 3550-second response wait and 3600-second client budget. Old task numbers, follow-up instructions, and acceptance exceptions describe that historical change and are superseded for current use by the instructions above. Original measurements and PASS results are preserved; the 961.926-second approval is not verification of the new timeout.
+
 Date: 2026-10-11. Change: `implement-hitl-mvp`. This record distinguishes automated evidence from live operator checks.
 
 ## Skill scenario review
